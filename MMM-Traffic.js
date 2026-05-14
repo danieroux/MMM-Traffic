@@ -17,6 +17,7 @@ Module.register('MMM-Traffic', {
     hoursStart: '00:00',
     hoursEnd: '23:59',
     waypoints: [],
+    useCalendar: false,
   },
 
   start: function () {
@@ -26,26 +27,126 @@ Module.register('MMM-Traffic', {
     this.firstResume = true;
     this.errorMessage = undefined;
     this.errorDescription = undefined;
+    this.calendarEvent = null;
+    this.calendarDestCoords = null;
     this.updateCommute = this.updateCommute.bind(this);
     this.getCommute = this.getCommute.bind(this);
     this.getDom = this.getDom.bind(this);
+    this._geocodeTimer = null;
+
     if (
-      [
-        this.config.originCoords,
-        this.config.destinationCoords,
-        this.config.accessToken,
-      ].includes(undefined)
+      [this.config.originCoords, this.config.accessToken].includes(undefined)
     ) {
       this.errorMessage = 'Config error';
       this.errorDescription =
-        'You must set originCoords, destinationCoords, and accessToken in your config';
+        'You must set originCoords and accessToken in your config';
       this.updateDom();
-    } else {
+      return;
+    }
+
+    if (!this.config.useCalendar) {
+      if (this.config.destinationCoords === undefined) {
+        this.errorMessage = 'Config error';
+        this.errorDescription =
+          'You must set destinationCoords when useCalendar is false';
+        this.updateDom();
+        return;
+      }
       this.updateCommute();
     }
   },
 
+  notificationReceived: function (notification, payload) {
+    if (!this.config.useCalendar) return;
+    if (notification !== 'CALENDAR_EVENTS') return;
+
+    const now = Date.now() / 1000; // CALENDAR_EVENTS startDate is in seconds
+    const next =
+      payload
+        .filter((e) => (e.location || e.geo) && e.startDate > now)
+        .sort((a, b) => a.startDate - b.startDate)[0] || null;
+
+    if (!next) {
+      // Only clear if the current event is no longer in the future
+      if (!this.calendarEvent || this.calendarEvent.startDate <= now) {
+        this.calendarEvent = null;
+        this.calendarDestCoords = null;
+        this.updateDom();
+      }
+      return;
+    }
+
+    // Keep the current event if it's still in the future and starts sooner
+    if (
+      this.calendarEvent &&
+      this.calendarEvent.startDate > now &&
+      this.calendarEvent.startDate <= next.startDate
+    ) {
+      return;
+    }
+
+    // Only re-resolve when the destination actually changes
+    if (
+      !this.calendarEvent ||
+      this.calendarEvent.location !== next.location ||
+      this.calendarEvent.geo !== next.geo
+    ) {
+      this.calendarDestCoords = null;
+      if (next.geo) {
+        this.useGeoForDestCoordsAndUpdate(next);
+      } else {
+        this.geocodeLocationForDestCoordsAndUpdate(next);
+      }
+    } else {
+      this.calendarEvent = next;
+    }
+  },
+
+  // iCal GEO is "lat;lon"; Mapbox expects "lng,lat"
+  geoToCoords: function (geo) {
+    if (typeof geo === 'string') {
+      const [lat, lon] = geo.split(';').map(Number);
+      return `${lon},${lat}`;
+    }
+    return `${geo.lon},${geo.lat}`;
+  },
+
+  useGeoForDestCoordsAndUpdate: function (event) {
+    this.calendarEvent = event;
+    this.calendarDestCoords = this.geoToCoords(event.geo);
+    this.updateCommute();
+  },
+
+  geocodeLocationForDestCoordsAndUpdate: function (event) {
+    clearTimeout(this._geocodeTimer);
+    // debounce with 1s to let the latest-latest event win
+    this._geocodeTimer = setTimeout(() => {
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(event.location)}.json?access_token=${this.config.accessToken}&limit=1`;
+      fetch(url)
+        .then((res) => res.json())
+        .then((json) => {
+          if (json.features && json.features.length > 0) {
+            const [lng, lat] = json.features[0].center;
+            this.calendarEvent = event;
+            this.calendarDestCoords = `${lng},${lat}`;
+            this.updateCommute();
+          }
+        })
+        .catch((e) => {
+          this.errorMessage = 'Geocoding error';
+          this.errorDescription = e.message;
+          this.updateDom();
+        });
+    }, 1000);
+  },
+
   updateCommute: function () {
+    const destCoords = this.config.useCalendar
+      ? this.calendarDestCoords
+      : this.config.destinationCoords;
+
+    if (!destCoords) return;
+
     let mode =
       this.config.mode == 'driving' ? 'driving-traffic' : this.config.mode;
 
@@ -54,7 +155,7 @@ Module.register('MMM-Traffic', {
     if (this.config.waypoints && this.config.waypoints.length > 0) {
       coordinates += ';' + this.config.waypoints.join(';');
     }
-    coordinates += ';' + this.config.destinationCoords;
+    coordinates += ';' + destCoords;
 
     this.url = encodeURI(
       `https://api.mapbox.com/directions/v5/mapbox/${mode}/${coordinates}?access_token=${this.config.accessToken}`,
@@ -73,7 +174,8 @@ Module.register('MMM-Traffic', {
     }
     // no network requests are made when the module is hidden, so check every 30 seconds during hidden
     // period to see if it's time to unhide yet
-    setTimeout(
+    clearTimeout(this._updateTimer);
+    this._updateTimer = setTimeout(
       this.updateCommute,
       this.internalHidden ? 3000 : this.config.interval,
     );
@@ -124,6 +226,9 @@ Module.register('MMM-Traffic', {
     if (this.internalHidden) return wrapper;
 
     // base divs
+    // In calendar mode, show nothing when there's no upcoming event with a location
+    if (this.config.useCalendar && !this.calendarEvent) return wrapper;
+
     var firstLineDiv = document.createElement('div');
     firstLineDiv.className = 'bright medium mmmtraffic-firstline';
     var secondLineDiv = document.createElement('div');
@@ -172,7 +277,11 @@ Module.register('MMM-Traffic', {
       .replace(/{duration}/g, this.duration)
       .replace(/{hours}/g, this.hours)
       .replace(/{leftoverMinutes}/g, this.leftoverMinutes)
-      .replace(/{route}/g, this.route);
+      .replace(/{route}/g, this.route)
+      .replace(
+        /{eventTitle}/g,
+        this.calendarEvent ? this.calendarEvent.title : '',
+      );
   },
 
   shouldHide: function () {

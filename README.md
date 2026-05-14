@@ -14,12 +14,14 @@ This a module for the [MagicMirror](https://github.com/MichMich/MagicMirror/tree
   - [Basic Options](#basic-options)
   - [Translation/Display](#translationdisplay)
   - [Per Day/Time Customization](#per-daytime-customization)
+  - [Calendar Mode](#calendar-mode)
 - [Examples](#examples)
   - [Simplest Config](#simplest-config)
   - [Minimal Look](#minimal-look)
   - [Use both lines](#use-both-lines)
   - [Multiple Routes](#multiple-routes)
   - [Per day customization](#per-day-customization)
+  - [Calendar Mode](#calendar-mode-1)
 - [Dependencies](#dependencies)
 - [Legacy](#legacy)
 
@@ -71,7 +73,7 @@ _Note: Google maps coordinates are `latitude,longitude`, but Mapbox uses `longit
 | ------------------- | -------------------------------------------- | ------ | ------------------------- |
 | `accessToken`       | Mapbox access token                          | string | -                         |
 | `originCoords`      | `longitude,latitude` of the origin location. | string | `'-84.504259,33.882107'` |
-| `destinationCoords` | `longitude,latitude` of the origin location. | string | `'-84.504259,33.882107'` |
+| `destinationCoords` | `longitude,latitude` of the destination. Required unless `useCalendar: true`. | string | `'-84.504259,33.882107'` |
 | `waypoints`         | Optional array of `longitude,latitude` waypoints between origin and destination. | array | `['-81.307398,28.411692', '-81.570944,28.393389']` |
 
 ### Basic Options
@@ -104,6 +106,20 @@ in firstLine/secondLine._
 | `{hours}`          | The hours portion of the driving time (e.g., 2 for a 125 min trip) |
 | `{leftoverMinutes}`| The remaining minutes after hours (e.g., 5 for a 125 min trip)     |
 | `{route}`          | The summary of the route from the mapbox API                       |
+| `{eventTitle}`     | The title of the next calendar event (calendar mode only)          |
+
+### Calendar Mode
+
+When `useCalendar: true`, the module listens for `CALENDAR_EVENTS` notifications from a calendar module (e.g. MMM-GoogleCalendar) instead of using a fixed destination. It picks the next upcoming event that has a location set, geocodes that address via the Mapbox geocoding API, and shows the driving time to it. The module is hidden when there are no upcoming events with a location.
+
+**Requirements:**
+- A calendar module must be configured with `broadcastEvents: true`
+- Events must have a location field set
+- `destinationCoords` is not used and should be omitted
+
+| Option        | Description                                                  | Type    | Default |
+| ------------- | ------------------------------------------------------------ | ------- | ------- |
+| `useCalendar` | Use the next calendar event's location as the destination    | boolean | `false` |
 
 ### Per Day/Time Customization
 
@@ -275,6 +291,32 @@ be completely hidden on weekends.
 | ----------- | ---------------------------------------------- |
 | Mon/Wed/Fri | ![minimal screenshot](screenshots/05-mwf.png)  |
 | Tu/Th       | ![minimal screenshot](screenshots/05-tuth.png) |
+
+### Calendar Mode
+
+Shows driving time to the next upcoming calendar event that has a location. Requires a calendar module configured with `broadcastEvents: true`.
+
+```js
+{
+	module: "MMM-GoogleCalendar",
+	position: "top_left",
+	config: {
+		broadcastEvents: true,
+		calendars: [{ calendarID: "your_calendar_id" }]
+	}
+},
+{
+	module: "MMM-Traffic",
+	position: "top_right",
+	config: {
+		accessToken: "your_key_here",
+		originCoords: "-84.398848,33.755165",
+		useCalendar: true,
+		firstLine: "{duration} mins",
+		secondLine: "{eventTitle}",
+	}
+},
+```
 
 ## Dependencies
 
